@@ -6,14 +6,26 @@ Domain: AI in Cybersecurity & Fintech
 Powered by NiceGUI + FastAPI + ECharts + Tailwind CSS + Quasar
 """
 
-import os
 import time
 import json
 import random
+import os
 import requests
 import networkx as nx
 from typing import Dict, Any, List, Optional
 from nicegui import ui, app
+
+# Auto-load local .env file if present
+if os.path.exists(".env"):
+    try:
+        with open(".env", "r") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    os.environ.setdefault(k.strip(), v.strip())
+    except Exception:
+        pass
 
 from detector_engine import ThreatDetectionEngine
 from testnet_feed import fetch_live_testnet_transactions, HISTORIC_ELLIPTIC_TRANSACTIONS
@@ -50,9 +62,9 @@ class ConsoleState:
         self.graph_view_mode: str = "transaction" # "transaction" (default normal) or "wallet" (combined all txs)
         self.graph_target_wallet: Optional[str] = None
         self.active_tab: Optional[str] = None
-        self.supabase_url: str = os.environ.get("SUPABASE_URL", "")
-        self.supabase_anon_key: str = os.environ.get("SUPABASE_ANON_KEY", "")
-        self.supabase_service_key: str = os.environ.get("SUPABASE_SERVICE_KEY", "")
+        self.supabase_url: str = os.getenv("SUPABASE_URL", "https://eeizbmhfglxwaarfpdpr.supabase.co")
+        self.supabase_anon_key: str = os.getenv("SUPABASE_ANON_KEY", "")
+        self.supabase_service_key: str = os.getenv("SUPABASE_SERVICE_KEY", "")
         self.supabase_saved_audits: List[Dict[str, Any]] = []
 
 state = ConsoleState()
@@ -63,7 +75,7 @@ def get_ai_explanation(tx_data: Dict[str, Any], result: Dict[str, Any]) -> str:
     if tx_id in state.ai_cache:
         return state.ai_cache[tx_id]
 
-    groq_key = os.environ.get("GROQ_API_KEY", "")
+    groq_key = os.getenv("GROQ_API_KEY", "")
     prompt = (
         f"You are a Senior Crypto Forensic AI Investigator at Sentinel-Chain. "
         f"Synthesize this transaction analysis based strictly on the model rules triggered: "
@@ -126,6 +138,19 @@ def get_ai_explanation(tx_data: Dict[str, Any], result: Dict[str, Any]) -> str:
 
 # Helper to find currently selected transaction
 def get_selected_tx() -> Dict[str, Any]:
+    if not state.stream_txs:
+        return {
+            "txId": "awaiting_upload_001",
+            "sender": state.private_wallet_address or "tb1q_demo_vault",
+            "receiver": "tb1q_mempool_gateway",
+            "tx_amount": 0.0,
+            "tx_fee": 0.0001,
+            "in_degree": 1,
+            "out_degree": 1,
+            "hop_velocity": 120.0,
+            "mixing_score": 0.0,
+            "source": "Awaiting Ingestion (0 Active)"
+        }
     for tx in state.stream_txs:
         if tx["txId"] == state.selected_tx_id:
             return tx
@@ -269,10 +294,20 @@ def open_csv_upload_dialog():
 
         async def handle_csv_upload(e):
             try:
-                raw_bytes = await e.content.read()
-                content = raw_bytes.decode('utf-8', errors='ignore')
+                if hasattr(e, 'file'):
+                    content = await e.file.text()
+                    file_name = getattr(e.file, 'name', 'uploaded.csv')
+                elif hasattr(e, 'content'):
+                    raw_bytes = await e.content.read()
+                    content = raw_bytes.decode('utf-8', errors='ignore')
+                    file_name = getattr(e, 'name', 'uploaded.csv')
+                else:
+                    content = ""
+                    file_name = "uploaded.csv"
+
                 lines = [l.strip() for l in content.splitlines() if l.strip()]
                 if len(lines) < 2:
+                    ui.notify("Uploaded CSV appears empty or missing rows.", type="warning", position="top-right")
                     return
                 header = [h.strip().lower().replace('"', '').replace("'", "") for h in lines[0].split(",")]
                 parsed = []
@@ -302,7 +337,7 @@ def open_csv_upload_dialog():
                         "out_degree": out_deg,
                         "hop_velocity": velocity,
                         "mixing_score": mix,
-                        "source": f"Uploaded: {e.name}",
+                        "source": f"Uploaded: {file_name}",
                         "timestamp": time.strftime("%H:%M:%S")
                     })
                 if parsed:
@@ -318,9 +353,10 @@ def open_csv_upload_dialog():
                                 type="warning", position="top", duration=6000, close_button=True
                             )
                             return
-                        state.stream_txs = wallet_matched + state.stream_txs
+                        existing_txids = {m["txId"] for m in wallet_matched}
+                        state.stream_txs = wallet_matched + [t for t in state.stream_txs if t["txId"] not in existing_txids]
                         state.selected_tx_id = wallet_matched[0]["txId"]
-                        state.total_scanned += len(wallet_matched)
+                        state.total_scanned = len(state.stream_txs)
                         
                         in_txs = [t for t in state.stream_txs if t.get("receiver", "").lower() == target_w]
                         out_txs = [t for t in state.stream_txs if t.get("sender", "").lower() == target_w]
@@ -339,13 +375,15 @@ def open_csv_upload_dialog():
                             "is_threat": is_thr,
                             "risk_score": 85 if is_thr else 14
                         })
-                        ui.notify(f"✓ Ingested & Saved {len(wallet_matched)} transactions to Supabase wallet_transactions table!", type="positive", position="top-right", icon="cloud_done")
+                        ui.notify(f"✓ Ingested & Saved {len(wallet_matched)} transactions to Supabase!", type="positive", position="top-right", icon="cloud_done")
                     else:
-                        state.stream_txs = parsed + state.stream_txs
+                        existing_txids = {m["txId"] for m in parsed}
+                        state.stream_txs = parsed + [t for t in state.stream_txs if t["txId"] not in existing_txids]
                         state.selected_tx_id = parsed[0]["txId"]
-                        state.total_scanned += len(parsed)
+                        state.total_scanned = len(state.stream_txs)
                         save_wallet_transactions_to_supabase(parsed[0].get("receiver", "tb1q_demo_vault"), parsed)
                         ui.notify(f"✓ Ingested {len(parsed)} transactions & saved to Supabase!", type="positive", position="top-right", icon="cloud_done")
+                    dialog.close()
                     refresh_all_views()
             except Exception as err:
                 ui.notify(f"Error parsing CSV: {err}", type="negative", position="top-right")
@@ -391,7 +429,7 @@ def save_wallet_transactions_to_supabase(wallet_addr: str, tx_list: List[Dict[st
 def load_wallet_from_supabase(wallet_addr: str) -> bool:
     """Loads previously saved transactions and audit records for this wallet from Supabase"""
     try:
-        url = f"{state.supabase_url}/rest/v1/wallet_transactions?wallet_address=eq.{wallet_addr}&select=*&order=id.desc&limit=50"
+        url = f"{state.supabase_url}/rest/v1/wallet_transactions?or=(wallet_address.eq.{wallet_addr},sender.eq.{wallet_addr},receiver.eq.{wallet_addr})&select=*&order=id.desc&limit=100"
         headers = {
             "apikey": state.supabase_service_key
         }
@@ -415,8 +453,7 @@ def load_wallet_from_supabase(wallet_addr: str) -> bool:
                         "source": "Supabase Cloud Vault",
                         "timestamp": str(r.get("timestamp", ""))[-8:] or "Synced"
                     })
-                existing_ids = {t["txId"] for t in restored}
-                state.stream_txs = restored + [t for t in state.stream_txs if t["txId"] not in existing_ids]
+                state.stream_txs = restored
                 state.selected_tx_id = restored[0]["txId"]
                 ui.notify(f"✓ Restored {len(restored)} saved transactions for {wallet_addr[:12]}.. from Supabase!", type="positive", position="top-right", icon="cloud_done")
                 return True
@@ -503,66 +540,52 @@ def open_login_dialog():
             ui.button("LAUNCH DEMO →", on_click=lambda: fill_and_launch_demo()).classes("bg-emerald-600 hover:bg-emerald-500 text-[11px] font-bold px-3 py-1.5 rounded-lg text-white")
 
         with ui.row().classes("w-full items-center justify-between mb-2 p-2 rounded-lg bg-slate-900/60 border border-slate-800"):
-            ui.label("Need 1-Wallet CSV to test upload?").classes("text-[11px] text-slate-300")
-            ui.button("📥 Download Demo 1-Wallet CSV", icon="download", on_click=lambda: ui.download('/download/demo_wallet_transactions.csv')).props("dense flat text-xs text-amber-400 font-bold")
+            ui.label("Need 1-Wallet CSV for demo?").classes("text-[11px] text-slate-300")
+            ui.button("📥 Download 1-Wallet CSV", icon="download", on_click=lambda: ui.download('/download/demo_wallet_transactions.csv')).props("dense flat text-xs text-amber-400 font-bold")
 
         ui.separator().classes("my-2 bg-slate-800")
         
-        user_in = ui.input("Username / Investigator ID", value=state.logged_in_user or "Demo Investigator").props("dense outlined dark").classes("w-full mb-2 text-xs")
+        user_in = ui.input("Username", value=state.logged_in_user or "demo_investigator").props("dense outlined dark").classes("w-full mb-2 text-xs")
         pass_in = ui.input("Password", password=True, value="demo_password").props("dense outlined dark").classes("w-full mb-2 text-xs")
-
-        sample_wallets = [
-            "tb1q_demo_vault",
-            "tb1q_alice_private_vault",
-            "tb1q_binance_hot_wallet",
-            "tb1q_lazarus_drainer_apt"
-        ]
-        wallet_in = ui.input("Monitored Wallet Address", value=state.private_wallet_address or sample_wallets[0]).props("dense outlined dark").classes("w-full mb-1 text-xs font-mono-code")
+        wallet_in = ui.input("Monitored Wallet", value=state.private_wallet_address or "tb1q_demo_vault").props("dense outlined dark").classes("w-full mb-3 text-xs font-mono-code")
         
-        with ui.row().classes("w-full items-center gap-1 mb-3"):
-            ui.label("Presets:").classes("text-[10px] text-slate-400")
-            for w in sample_wallets:
-                ui.button(w.split('_')[1], on_click=lambda w=w: wallet_in.set_value(w)).props("dense flat text-[10px] text-cyan-400 bg-slate-900/60")
-        
-        def execute_signin():
-            usr = user_in.value.strip() or "Demo Investigator"
+        def execute_signin(restore_history: bool = False):
+            usr = user_in.value.strip() or "demo_investigator"
             addr = wallet_in.value.strip() or "tb1q_demo_vault"
             state.logged_in_user = usr
             state.private_wallet_address = addr
             state.is_private_wallet_mode = True
             
-            # Try to load previous data from Supabase
-            loaded = load_wallet_from_supabase(addr)
-            if not loaded:
-                init_txs = [
-                    {"txId": "tx_demo_init_01", "sender": "tb1q_binance_exchange_vault", "receiver": addr, "tx_amount": 4.5, "tx_fee": 0.00045, "in_degree": 1, "out_degree": 2, "hop_velocity": 360.0, "mixing_score": 0.0},
-                    {"txId": "tx_demo_init_02", "sender": "tb1q_coinbase_custody", "receiver": addr, "tx_amount": 2.15, "tx_fee": 0.00025, "in_degree": 2, "out_degree": 2, "hop_velocity": 420.0, "mixing_score": 0.0},
-                    {"txId": "tx_demo_init_03", "sender": addr, "receiver": "tb1q_merchant_bitpay", "tx_amount": 0.35, "tx_fee": 0.00008, "in_degree": 1, "out_degree": 1, "hop_velocity": 240.0, "mixing_score": 0.0}
-                ]
-                save_wallet_transactions_to_supabase(addr, init_txs)
-                save_wallet_audit_to_supabase(addr, {
-                    "total_in": 6.65,
-                    "total_out": 0.35,
-                    "tx_count": 3,
-                    "is_threat": False,
-                    "risk_score": 11.2
-                })
+            if restore_history:
+                loaded = load_wallet_from_supabase(addr)
+                if not loaded:
+                    state.stream_txs = []
+                    state.selected_tx_id = ""
+                    state.total_scanned = 0
+                    ui.notify(f"No cloud history found for {addr}. Initialized clean workspace (0 Txs).", type="info", position="top-right")
+            else:
+                # Starts at 0 transactions ready for live upload demo
+                state.stream_txs = []
+                state.selected_tx_id = ""
+                state.total_scanned = 0
+                ui.notify(f"✓ Connected to {addr}! Ready for live demo (0 Transactions).", type="positive", position="top-right", icon="verified")
             
             dialog.close()
-            ui.notify(f"✓ Authenticated as {usr}! Focused on wallet {addr[:12]}..", type="positive", position="top-right", icon="verified")
             refresh_all_views()
             
         def fill_and_launch_demo():
-            user_in.set_value("Demo Investigator")
+            user_in.set_value("demo_investigator")
             pass_in.set_value("demo_password")
             wallet_in.set_value("tb1q_demo_vault")
-            execute_signin()
+            execute_signin(restore_history=False)
 
         with ui.row().classes("w-full justify-between items-center pt-2"):
             ui.button("Cancel", on_click=dialog.close).props("flat text-slate-400 text-xs")
-            ui.button("Sign In & Load Cloud Data", on_click=execute_signin).classes(
-                "bg-cyan-600 hover:bg-cyan-500 text-xs font-bold px-4 py-2 rounded-lg text-white"
-            )
+            with ui.row().classes("gap-2"):
+                ui.button("☁️ Load Saved History", on_click=lambda: execute_signin(restore_history=True)).props("flat text-xs text-sky-400 font-bold").tooltip("Restores previous transactions from Supabase")
+                ui.button("⚡ Start Demo (0 Txs)", on_click=lambda: execute_signin(restore_history=False)).classes(
+                    "bg-cyan-600 hover:bg-cyan-500 text-xs font-bold px-4 py-2 rounded-lg text-white"
+                ).tooltip("Starts fresh at 0 transactions ready to upload demo CSV")
     dialog.open()
 
 def open_private_wallet_workspace():
@@ -870,22 +893,23 @@ def build_utxo_graph_option(selected_tx: Dict[str, Any], is_threat: bool) -> Dic
         "txId": tx_id
     })
     
-    # 2. Transaction Intercept Hub
+    # 2. Transaction Intercept Block Node
     tx_short = tx_id[:8] + ".."
-    tx_hub_name = f"⚡ Tx Intercept\n{tx_short}"
+    tx_hub_name = f"📦 BLOCK #{tx_short}\n{amount:.4f} BTC"
     tx_color = "#EF4444" if is_threat else "#22C55E"
     nodes.append({
         "name": tx_hub_name,
-        "symbolSize": 68,
+        "symbol": "roundRect",
+        "symbolSize": [108, 48],
         "draggable": True,
         "itemStyle": {
-            "color": tx_color,
-            "borderColor": "#FFFFFF",
+            "color": "#09101d",
+            "borderColor": tx_color,
             "borderWidth": 2.5,
-            "shadowBlur": 18,
+            "shadowBlur": 16,
             "shadowColor": tx_color
         },
-        "value": f"TxID: {tx_id}\nVolume: {amount:.4f} BTC\nVelocity: {velocity}s\nMixer Score: {mixing_score*100:.0f}%\n👉 Click to inspect transaction",
+        "value": f"Mempool Block TxID: {tx_id}\nVolume: {amount:.4f} BTC\nVelocity: {velocity}s\nMixer Score: {mixing_score*100:.0f}%\n👉 Click to inspect transaction",
         "category": "⚡ Tx On-Chain Intercept",
         "txId": tx_id
     })
@@ -1506,8 +1530,8 @@ def render_header_hud():
             with ui.column().classes("gap-0"):
                 with ui.row().classes("items-center gap-2"):
                     ui.label("SENTINEL-CHAIN").classes("text-2xl font-black tracking-tight text-white")
-                    ui.badge("AVISHKAR'26 // MAVERICKS", color="cyan-9").classes("font-bold text-xs px-2 py-0.5 rounded-full")
-                ui.label("Real-Time Blockchain Threat Detection Console | Problem Statement #30").classes("text-xs text-slate-400 font-medium")
+                    ui.badge("AVISHKAR'26 MAVERICKS", color="cyan-9").classes("font-bold text-xs px-2 py-0.5 rounded-full")
+                ui.label("Blockchain Threat Detection & Forensic Reasoning | Problem Statement #30").classes("text-xs text-slate-400 font-medium")
 
         # Right Live Controls & Status
         with ui.row().classes("items-center gap-5"):
@@ -1552,13 +1576,23 @@ def render_header_hud():
 @ui.refreshable
 def render_kpi_dashboard():
     """6 Key Performance Indicators for the Security Operations Center"""
+    total_scanned_count = len(state.stream_txs)
+    threats_count = sum(
+        1 for t in state.stream_txs 
+        if t.get("mixing_score", 0) > 0.5 
+        or t.get("hop_velocity", 100) < 20.0 
+        or "lazarus" in (t.get("sender","") + t.get("receiver","")).lower() 
+        or "drainer" in (t.get("sender","") + t.get("receiver","")).lower()
+        or "lockbit" in (t.get("sender","") + t.get("receiver","")).lower()
+        or "threat" in t.get("txId", "").lower()
+    )
     with ui.grid(columns=6).classes("w-full gap-3 mb-4"):
         # KPI 1
         with ui.card().classes("cyber-card p-3 gap-1"):
             with ui.row().classes("items-center justify-between w-full"):
                 ui.label("TOTAL INSPECTED").classes("text-[11px] font-bold text-slate-400 tracking-wider")
                 ui.icon("radar", size="1.1rem").classes("text-sky-400")
-            ui.label(f"{state.total_scanned}").classes("text-2xl font-black text-white")
+            ui.label(f"{total_scanned_count}").classes("text-2xl font-black text-white")
             ui.label("Sub-15ms Pre-Flight").classes("text-[10px] text-sky-400 font-semibold")
 
         # KPI 2
@@ -1566,7 +1600,7 @@ def render_kpi_dashboard():
             with ui.row().classes("items-center justify-between w-full"):
                 ui.label("THREATS INTERCEPTED").classes("text-[11px] font-bold text-slate-400 tracking-wider")
                 ui.icon("gpp_bad", size="1.1rem").classes("text-rose-400")
-            ui.label(f"{state.threats_blocked}").classes("text-2xl font-black text-rose-400")
+            ui.label(f"{threats_count}").classes("text-2xl font-black text-rose-400")
             ui.label("Zero-Day & Known Exploits").classes("text-[10px] text-rose-400/80 font-semibold")
 
         # KPI 3
@@ -1700,7 +1734,15 @@ def render_mempool_feed():
                         ui.label(f"From: {tx.get('sender', 'unknown')[:14]}..").classes("font-mono-code truncate")
                         ui.label(f"To: {tx.get('receiver', 'unknown')[:14]}..").classes("font-mono-code truncate")
 
-            if rendered_count == 0:
+            if len(state.stream_txs) == 0:
+                with ui.column().classes("w-full items-center justify-center p-6 text-slate-400 gap-2 border border-dashed border-slate-700/80 rounded-xl my-4 bg-slate-900/40"):
+                    ui.icon("cloud_upload", size="2.5rem").classes("text-cyan-400")
+                    ui.label("0 Stream Transactions").classes("text-xs font-bold text-white font-mono-code")
+                    ui.label("Wallet is at 0 transactions for live presentation demo.").classes("text-[11px] text-slate-400 text-center")
+                    with ui.row().classes("gap-2 mt-1"):
+                        ui.button("📁 Upload CSV", icon="upload_file", on_click=open_csv_upload_dialog).classes("bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-bold px-3 py-1.5 rounded")
+                        ui.button("⚡ 1-Click 27-Tx", icon="bolt", on_click=quick_load_demo_27).classes("bg-amber-600 hover:bg-amber-500 text-white text-[10px] font-bold px-3 py-1.5 rounded")
+            elif rendered_count == 0:
                 with ui.column().classes("w-full items-center justify-center p-8 text-slate-500 gap-2"):
                     ui.icon("search_off", size="2.5rem")
                     ui.label("No transactions matching current filter criteria.").classes("text-xs")
@@ -1746,15 +1788,8 @@ def render_forensic_inspector():
 
                 # Action Buttons
                 with ui.row().classes("items-center gap-2"):
-                    ui.button("🌐 All-Txs Network Mesh", icon="account_tree", on_click=open_all_txs_mesh).classes(
-                        "bg-indigo-950/70 hover:bg-indigo-900 text-indigo-300 text-xs font-bold px-3 py-1.5 rounded-lg border border-indigo-600/60"
-                    ).tooltip("Many wallets & many lines: multi-wallet mempool mesh")
-                    ui.button("👑 Focus Wallet", icon="hub", on_click=lambda: switch_to_wallet_graph(selected_tx.get("sender"))).classes(
-                        "bg-slate-800 hover:bg-slate-700 text-cyan-400 text-xs font-bold px-3 py-1.5 rounded-lg border border-cyan-800/60"
-                    ).tooltip("View star topology focused on this wallet")
                     if is_threat:
                         ui.button("🚨 Broadcast OFAC Block", on_click=lambda: trigger_quarantine(selected_tx)).classes("bg-rose-600 hover:bg-rose-500 text-xs font-bold px-3 py-1.5 rounded-lg")
-                    ui.button("Export JSON Dossier", icon="receipt_long", on_click=lambda: export_dossier(selected_tx, res)).classes("bg-slate-800 hover:bg-slate-700 text-xs font-bold px-3 py-1.5 rounded-lg")
 
             # Quick Metric Chips in Hero Banner
             ui.separator().classes("my-2 bg-slate-800")
@@ -1891,68 +1926,20 @@ def render_forensic_inspector():
             # ------------------------------------------------------------------
             with ui.tab_panel(tab_graph).classes("gap-2 p-0 pt-3"):
                 with ui.card().classes("cyber-card p-4 w-full"):
-                    cur_mode = state.graph_view_mode # 'transaction', 'all_mesh', or 'wallet'
-                    target_w = state.graph_target_wallet or (state.private_wallet_address if state.is_private_wallet_mode else selected_tx["sender"])
-
-                    # 3-Way Graph Mode Switcher Bar
-                    with ui.row().classes("w-full items-center justify-between mb-3 bg-slate-900/90 p-2.5 rounded-xl border border-slate-800"):
-                        with ui.row().classes("items-center gap-2"):
-                            ui.icon("hub", size="1.2rem").classes("text-cyan-400")
-                            ui.label("TOPOLOGY VIEW:").classes("text-[11px] font-bold text-slate-300 tracking-wider")
-                            
-                            with ui.row().classes("bg-slate-950 p-1 rounded-lg border border-slate-700/60 gap-1"):
-                                ui.button(
-                                    "⚡ Normal Tx Flow", 
-                                    icon="receipt_long", 
-                                    on_click=lambda: set_graph_mode("transaction")
-                                ).props(f"dense {'unelevated bg-cyan-600 text-white font-bold' if cur_mode == 'transaction' else 'flat text-slate-400'} text-xs")
-                                
-                                ui.button(
-                                    "🌐 All Txs Network Mesh", 
-                                    icon="account_tree", 
-                                    on_click=lambda: set_graph_mode("all_mesh")
-                                ).props(f"dense {'unelevated bg-indigo-600 text-white font-bold' if cur_mode == 'all_mesh' else 'flat text-slate-400'} text-xs").tooltip("Many wallets & many lines: multi-wallet network mesh")
-
-                                ui.button(
-                                    "👑 Single Wallet Focus", 
-                                    icon="hub", 
-                                    on_click=lambda: set_graph_mode("wallet")
-                                ).props(f"dense {'unelevated bg-emerald-600 text-white font-bold' if cur_mode == 'wallet' else 'flat text-slate-400'} text-xs").tooltip("Star topology focused strictly on one wallet")
-
-                        with ui.row().classes("items-center gap-1.5"):
-                            ui.icon("touch_app", size="1.1rem").classes("text-amber-400")
-                            ui.label("Click any node or line to open that transaction!").classes("text-[11px] text-amber-300 font-bold")
-
-                    if cur_mode == "all_mesh":
-                        # ------------------------------------------------------
-                        # OPTION B: ALL-TRANSACTIONS MULTI-WALLET MESH GRAPH
-                        # ------------------------------------------------------
-                        with ui.row().classes("w-full items-center justify-between mb-2"):
-                            with ui.row().classes("items-center gap-2"):
-                                ui.icon("account_tree", size="1.3rem").classes("text-indigo-400")
-                                ui.label("GLOBAL ALL-TRANSACTIONS NETWORK MESH (MULTI-WALLET TOPOLOGY)").classes("text-xs font-bold text-white tracking-wider")
-                                ui.badge(f"{len(state.stream_txs)} Active Stream Transactions Interconnected", color="indigo-9").classes("font-mono-code text-[11px] font-bold")
-                            ui.button("⚡ Back to Normal Single Tx", icon="receipt_long", on_click=lambda: set_graph_mode("transaction")).props("dense outline text-xs text-cyan-400 border-cyan-700/60")
-
-                        chart_all = ui.echart(build_all_transactions_graph_option(state.stream_txs)).classes("w-full h-[520px]")
-                        chart_all.on_point_click(handle_graph_click)
-
-                    elif cur_mode == "wallet":
-                        # ------------------------------------------------------
-                        # OPTION C: SINGLE WALLET FOCUS STAR TOPOLOGY
-                        # ------------------------------------------------------
+                    if state.is_private_wallet_mode and state.private_wallet_address:
+                        # ======================================================
+                        # WALLET MODE: 1-WALLET MULTI-TRANSACTION MESH GRAPH
+                        # ======================================================
+                        target_w = state.private_wallet_address
                         with ui.row().classes("w-full items-center justify-between mb-2"):
                             with ui.row().classes("items-center gap-2"):
                                 ui.icon("account_balance_wallet", size="1.3rem").classes("text-amber-400")
-                                ui.label(f"👑 SINGLE WALLET FOCUS: {target_w[:20]}..").classes("text-xs font-bold text-white tracking-wider font-mono-code")
-                                ui.badge("Multi-Tx Star Network", color="emerald-9").classes("font-mono-code text-[11px] font-bold")
+                                ui.label(f"👑 MONITORED WALLET MESH: {target_w}").classes("text-xs font-bold text-white tracking-wider font-mono-code")
+                                ui.badge("Supabase Cloud Audited", color="emerald-9").classes("font-mono-code text-[11px] font-bold")
                             
-                            with ui.row().classes("items-center gap-2"):
-                                ui.button("Sender", on_click=lambda: set_target_wallet(selected_tx["sender"])).props("dense flat text-[10px] text-cyan-400 bg-slate-800/80")
-                                ui.button("Receiver", on_click=lambda: set_target_wallet(selected_tx["receiver"])).props("dense flat text-[10px] text-purple-400 bg-slate-800/80")
-                                if state.is_private_wallet_mode and state.private_wallet_address:
-                                    ui.button("My Vault", on_click=lambda: set_target_wallet(state.private_wallet_address)).props("dense flat text-[10px] text-emerald-400 bg-slate-800/80")
-                                ui.button("⚡ Back to Normal Tx Flow", icon="receipt_long", on_click=lambda: set_graph_mode("transaction")).props("dense outline text-xs text-cyan-400 border-cyan-700/60")
+                            with ui.row().classes("items-center gap-1.5"):
+                                ui.icon("touch_app", size="1.1rem").classes("text-amber-400")
+                                ui.label("Click any block or line to inspect that transaction").classes("text-[11px] text-amber-300 font-semibold")
 
                         # Inflow / Outflow KPI Bar for Target Wallet
                         w_clean = target_w.strip().lower()
@@ -1965,39 +1952,55 @@ def render_forensic_inspector():
                             ui.label(f"Total Inflows: +{tot_in:.3f} BTC ({len(in_txs)} TXs)").classes("text-emerald-400 font-bold font-mono-code")
                             ui.label(f"Total Outflows: -{tot_out:.3f} BTC ({len(out_txs)} TXs)").classes("text-rose-400 font-bold font-mono-code")
                             ui.label(f"Net Balance: +{(tot_in - tot_out):.3f} BTC").classes("text-cyan-400 font-bold font-mono-code")
-                            ui.label(f"Combined History: {len(in_txs) + len(out_txs)} Total Events").classes("text-slate-400 font-semibold")
+                            ui.label(f"Mempool History: {len(state.stream_txs)} Total Events").classes("text-slate-400 font-semibold")
 
-                        # Action Bar if this is the private monitored wallet
-                        if state.is_private_wallet_mode and state.private_wallet_address:
-                            with ui.row().classes("w-full items-center justify-between p-2 rounded-lg bg-slate-950/80 border border-slate-700/60 mb-2"):
-                                with ui.row().classes("items-center gap-2"):
-                                    ui.label("Wallet Actions:").classes("text-[11px] font-bold text-slate-300")
-                                    ui.button("💥 Test Attack", icon="gpp_bad", on_click=lambda: inject_wallet_threat(state.private_wallet_address)).classes(
-                                        "bg-rose-700 hover:bg-rose-600 text-white text-[11px] font-bold px-3 py-1 rounded-lg"
-                                    ).tooltip("Simulates a live drainer/mixer exploit targeting this wallet")
-                                    ui.button("🌐 Pull Testnet Hop", icon="download", on_click=lambda: inject_wallet_testnet_hop(state.private_wallet_address)).classes(
-                                        "bg-sky-600 hover:bg-sky-500 text-white text-[11px] font-bold px-3 py-1 rounded-lg"
-                                    ).tooltip("Simulates a verified testnet block transfer to this wallet")
-                                    ui.button("📁 Upload Batch CSV", icon="upload_file", on_click=open_csv_upload_dialog).classes(
-                                        "bg-emerald-700 hover:bg-emerald-600 text-white text-[11px] font-bold px-3 py-1 rounded-lg"
-                                    ).tooltip("Upload CSV batch (strictly filtered for this wallet)")
-                                ui.button("📥 Sample Wallet CSV", icon="download", on_click=lambda: ui.download('/download/sample_wallet_transactions.csv')).props("dense flat text-xs text-cyan-400")
+                        # Action Bar
+                        with ui.row().classes("w-full items-center justify-between p-2 rounded-lg bg-slate-950/80 border border-slate-700/60 mb-2"):
+                            with ui.row().classes("items-center gap-2"):
+                                ui.label("Wallet Actions:").classes("text-[11px] font-bold text-slate-300")
+                                ui.button("💥 Test Attack", icon="gpp_bad", on_click=lambda: inject_wallet_threat(target_w)).classes(
+                                    "bg-rose-700 hover:bg-rose-600 text-white text-[11px] font-bold px-3 py-1 rounded-lg"
+                                ).tooltip("Simulates a live drainer/mixer exploit targeting this wallet")
+                                ui.button("🌐 Pull Testnet Hop", icon="download", on_click=lambda: inject_wallet_testnet_hop(target_w)).classes(
+                                    "bg-sky-600 hover:bg-sky-500 text-white text-[11px] font-bold px-3 py-1 rounded-lg"
+                                ).tooltip("Simulates a verified testnet block transfer to this wallet")
+                                ui.button("📁 Upload Batch CSV", icon="upload_file", on_click=open_csv_upload_dialog).classes(
+                                    "bg-emerald-700 hover:bg-emerald-600 text-white text-[11px] font-bold px-3 py-1 rounded-lg"
+                                ).tooltip("Upload CSV batch (strictly filtered for this wallet)")
+                                ui.button("⚡ 1-Click Load 27-Tx", icon="bolt", on_click=quick_load_demo_27).classes(
+                                    "bg-amber-700 hover:bg-amber-600 text-white text-[11px] font-bold px-3 py-1 rounded-lg"
+                                ).tooltip("1-click instant load for 27 transactions demo")
+                                ui.button("🗑️ Reset to 0", icon="restart_alt", on_click=clear_wallet_workspace).props(
+                                    "dense flat text-xs text-rose-400 font-bold"
+                                ).tooltip("Reset workspace to 0 transactions for live demo upload")
+                            ui.button("📥 Download 1-Wallet CSV", icon="download", on_click=lambda: ui.download('/download/demo_wallet_transactions.csv')).props("dense flat text-xs text-amber-400 font-bold")
 
-                        chart_w = ui.echart(build_single_wallet_graph_option(target_w)).classes("w-full h-[480px]")
+                        if len(state.stream_txs) == 0:
+                            with ui.card().classes("w-full p-4 mb-2 bg-gradient-to-r from-slate-900/90 via-cyan-950/40 to-slate-900/90 border border-cyan-500/40 rounded-xl items-center text-center gap-2"):
+                                ui.icon("cloud_upload", size="2.2rem").classes("text-cyan-400")
+                                ui.label("DEMO READY: 0 TRANSACTIONS LOADED").classes("text-xs font-bold text-cyan-300 font-mono-code tracking-wider")
+                                ui.label(f"Wallet '{target_w}' initialized with 0 transactions. Upload 'demo_wallet_transactions.csv' or click below to stream 27 transactions live:").classes("text-xs text-slate-300 max-w-lg mb-1")
+                                with ui.row().classes("gap-3 justify-center"):
+                                    ui.button("📁 Upload 27-Tx Demo CSV", icon="upload_file", on_click=open_csv_upload_dialog).classes("bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold px-4 py-2 rounded-lg")
+                                    ui.button("⚡ Quick Load 27-Tx Demo (1-Click)", icon="bolt", on_click=quick_load_demo_27).classes("bg-amber-600 hover:bg-amber-500 text-white text-xs font-bold px-4 py-2 rounded-lg")
+                                    ui.button("📥 Download 27-Tx CSV", icon="download", on_click=lambda: ui.download('/download/demo_wallet_transactions.csv')).classes("bg-slate-800 hover:bg-slate-700 text-cyan-300 text-xs font-bold px-3 py-2 rounded-lg")
+
+                        chart_w = ui.echart(build_all_transactions_graph_option(state.stream_txs)).classes("w-full h-[520px]")
                         chart_w.on_point_click(handle_graph_click)
 
                     else:
-                        # ------------------------------------------------------
-                        # OPTION A: NORMAL PER-TRANSACTION UTXO GRAPH (DEFAULT)
-                        # ------------------------------------------------------
+                        # ======================================================
+                        # NORMAL MODE (WITHOUT LOGIN): CLEAN STANDARD UTXO GRAPH
+                        # ======================================================
                         with ui.row().classes("w-full items-center justify-between mb-2"):
                             with ui.row().classes("items-center gap-2"):
                                 ui.icon("hub", size="1.3rem").classes("text-emerald-400")
-                                ui.label("PER-TRANSACTION UTXO GRAPH (ON-CHAIN INTERCEPT FLOW)").classes("text-xs font-bold text-white tracking-wider")
-                                ui.badge(f"Tx: {selected_tx['txId'][:8]}..", color="emerald-9").classes("font-mono-code text-[11px] font-bold")
+                                ui.label("ON-CHAIN UTXO TRANSACTION FLOW GRAPH").classes("text-xs font-bold text-white tracking-wider")
+                                ui.badge(f"Tx #{selected_tx['txId'][:8]}..", color="emerald-9").classes("font-mono-code text-[11px] font-bold")
                             
-                            with ui.row().classes("items-center gap-2"):
-                                ui.button("🌐 All-Txs Mesh", icon="account_tree", on_click=lambda: set_graph_mode("all_mesh")).props("dense outline text-xs text-indigo-400 border-indigo-700/60")
+                            with ui.row().classes("items-center gap-1.5"):
+                                ui.icon("touch_app", size="1.1rem").classes("text-slate-400")
+                                ui.label("Click node or line to inspect").classes("text-[11px] text-slate-400")
                         
                         chart_tx = ui.echart(build_utxo_graph_option(selected_tx, is_threat)).classes("w-full h-[480px]")
                         chart_tx.on_point_click(handle_graph_click)
@@ -2103,6 +2106,47 @@ def refresh_all_views():
     render_kpi_dashboard.refresh()
     render_mempool_feed.refresh()
     render_forensic_inspector.refresh()
+
+def clear_wallet_workspace():
+    state.stream_txs = []
+    state.selected_tx_id = ""
+    state.total_scanned = 0
+    try:
+        url = f"{state.supabase_url}/rest/v1/wallet_transactions?wallet_address=eq.{state.private_wallet_address or 'tb1q_demo_vault'}"
+        requests.delete(url, headers={"apikey": state.supabase_service_key}, timeout=2.0)
+    except Exception:
+        pass
+    ui.notify("🗑️ Cleared workspace to 0 transactions. Ready for live upload demo!", type="info", position="top-right", icon="restart_alt")
+    refresh_all_views()
+
+def quick_load_demo_27():
+    try:
+        with open('demo_wallet_transactions.csv', 'r') as f:
+            reader = csv.DictReader(f)
+            parsed = []
+            for i, r in enumerate(reader, 1):
+                parsed.append({
+                    "id": f"DEMO-{i:02d}",
+                    "txId": r["txid"],
+                    "sender": r["sender"],
+                    "receiver": r["receiver"],
+                    "tx_amount": float(r["tx_amount"]),
+                    "tx_fee": float(r["tx_fee"]),
+                    "in_degree": int(r["in_degree"]),
+                    "out_degree": int(r["out_degree"]),
+                    "hop_velocity": float(r["hop_velocity"]),
+                    "mixing_score": float(r["mixing_score"]),
+                    "source": "Demo Batch (27 Txs)",
+                    "timestamp": time.strftime("%H:%M:%S")
+                })
+        state.stream_txs = parsed
+        state.selected_tx_id = parsed[0]["txId"]
+        state.total_scanned = len(parsed)
+        save_wallet_transactions_to_supabase(state.private_wallet_address or "tb1q_demo_vault", parsed)
+        ui.notify(f"✓ Loaded all {len(parsed)} demo transactions & synced to Supabase!", type="positive", position="top-right", icon="cloud_done")
+        refresh_all_views()
+    except Exception as err:
+        ui.notify(f"Error loading demo file: {err}", type="negative", position="top-right")
 
 def set_graph_mode(mode: str):
     state.graph_view_mode = mode
@@ -2241,15 +2285,12 @@ def main_page():
 # ==============================================================================
 
 if __name__ in {"__main__", "__mp_main__"}:
-    port = int(os.environ.get("PORT", 8080))
-    host = os.environ.get("HOST", "0.0.0.0")
-    print(f"[*] Starting Sentinel-Chain Cyber Intelligence Console on NiceGUI ({host}:{port})...")
+    print("[*] Starting Sentinel-Chain Cyber Intelligence Console on NiceGUI (Port 8080)...")
     ui.run(
-        title="SENTINEL-CHAIN // Real-Time Blockchain Threat Detection Console",
+        title="SENTINEL-CHAIN | Blockchain Threat Detection Console",
         favicon="🛡️",
         dark=True,
-        host=host,
-        port=port,
+        port=8080,
         reload=False,
         show=False
     )

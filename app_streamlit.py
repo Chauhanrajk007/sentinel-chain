@@ -16,6 +16,18 @@ import pandas as pd
 from detector_engine import ThreatDetectionEngine
 from testnet_feed import fetch_live_testnet_transactions, HISTORIC_ELLIPTIC_TRANSACTIONS
 
+# Auto-load local .env file if present
+if os.path.exists(".env"):
+    try:
+        with open(".env", "r") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    os.environ.setdefault(k.strip(), v.strip())
+    except Exception:
+        pass
+
 # Page Config
 st.set_page_config(
     page_title="Sentinel-Chain // Blockchain Threat Detection",
@@ -121,7 +133,7 @@ if "selected_tx_id" not in st.session_state:
 
 # Multi-Provider AI Forensic Explanation (Groq Cloud openai/gpt-oss-20b + Safe Fallback)
 def get_ai_explanation(tx_data, result):
-    groq_key = os.environ.get("GROQ_API_KEY", "")
+    groq_key = os.getenv("GROQ_API_KEY", "")
     prompt = (
         f"You are a Senior Crypto Forensic AI Investigator at Sentinel-Chain. "
         f"Synthesize this transaction analysis based strictly on the model rules triggered: "

@@ -55,15 +55,15 @@ CREATE POLICY "Allow all on wallet_audits" ON public.wallet_audits FOR ALL USING
 DROP POLICY IF EXISTS "Allow all on wallet_transactions" ON public.wallet_transactions;
 CREATE POLICY "Allow all on wallet_transactions" ON public.wallet_transactions FOR ALL USING (true) WITH CHECK (true);
 
--- 5. SEED INITIAL VERIFIED RECORDS FOR ALICE DEMO WALLET
+-- 5. SEED INITIAL VERIFIED RECORDS FOR DEMO WALLET
 INSERT INTO public.wallet_audits (wallet_address, investigator, tx_count, total_in_btc, total_out_btc, net_balance_btc, threat_flagged, risk_score)
 VALUES 
-    ('tb1q_alice_private_vault', 'alice_analyst', 4, 4.7500, 1.0000, 3.7500, false, 12.4)
+    ('tb1q_demo_vault', 'demo_investigator', 20, 35.8500, 22.8250, 13.0250, false, 14.2)
 ON CONFLICT DO NOTHING;
 
-INSERT INTO public.wallet_transactions (wallet_address, txid, sender, receiver, tx_amount, tx_fee, in_degree, out_degree, hop_velocity, mixing_score)
-VALUES
-    ('tb1q_alice_private_vault', 'tx_alice_init_01', 'tb1q_binance_exchange_vault', 'tb1q_alice_private_vault', 3.5000, 0.00045, 1, 2, 360.0, 0.00),
-    ('tb1q_alice_private_vault', 'tx_alice_init_02', 'tb1q_coinbase_custody', 'tb1q_alice_private_vault', 1.2500, 0.00025, 2, 2, 420.0, 0.00),
-    ('tb1q_alice_private_vault', 'tx_alice_init_03', 'tb1q_alice_private_vault', 'tb1q_cold_storage_vault', 0.8500, 0.00012, 1, 2, 180.0, 0.00),
-    ('tb1q_alice_private_vault', 'tx_alice_init_04', 'tb1q_alice_private_vault', 'tb1q_merchant_bitpay', 0.1500, 0.00008, 1, 1, 240.0, 0.00);
+-- 6. CLEANUP QUERY: Remove any transactions not belonging to the demo wallet:
+DELETE FROM public.wallet_transactions WHERE wallet_address != 'tb1q_demo_vault';
+
+-- 7. FULL RESET QUERY (Run this if you ever want to wipe all records and start 100% fresh):
+-- TRUNCATE TABLE public.wallet_transactions RESTART IDENTITY;
+-- TRUNCATE TABLE public.wallet_audits RESTART IDENTITY;
