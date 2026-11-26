@@ -10,6 +10,7 @@ import time
 import json
 import random
 import os
+import csv
 import requests
 import networkx as nx
 from typing import Dict, Any, List, Optional
@@ -521,23 +522,14 @@ def inject_wallet_testnet_hop(wallet_addr: str):
     refresh_all_views()
 
 def open_login_dialog():
-    with ui.dialog() as dialog, ui.card().classes("cyber-card p-6 w-[520px] border border-cyan-500/40 relative overflow-hidden"):
+    with ui.dialog() as dialog, ui.card().classes("cyber-card p-6 w-[500px] border border-cyan-500/40 relative overflow-hidden"):
         with ui.row().classes("w-full items-center justify-between mb-2"):
             with ui.row().classes("items-center gap-2"):
                 ui.icon("lock", size="1.4rem").classes("text-cyan-400")
                 ui.label("DEMO SIGN-IN & WALLET CLOUD VAULT").classes("text-sm font-bold text-white uppercase tracking-wider")
             ui.button(icon="close", on_click=dialog.close).props("flat round dense text-slate-400")
             
-        ui.label("Sign in with credentials & wallet address to isolate star topology, auto-save uploads, and persist records in Supabase:").classes("text-xs text-slate-400 mb-3")
-        
-        # One-Click Instant Demo Button with glowing animated cyber gradient
-        with ui.row().classes("w-full p-3.5 rounded-xl mb-3 items-center justify-between border border-emerald-500/60 bg-gradient-to-r from-emerald-950/80 via-slate-900 to-cyan-950/80 shadow-[0_0_20px_rgba(16,185,129,0.3)] transition-all duration-300 hover:scale-[1.01]").style("cursor: pointer;").on("click", lambda: fill_and_launch_demo()):
-            with ui.row().classes("items-center gap-2.5"):
-                ui.html('<span class="pulse-dot"></span>')
-                with ui.column().classes("gap-0"):
-                    ui.label("⚡ ONE-CLICK DEMO ACCESS").classes("text-xs font-black text-emerald-300 tracking-wider")
-                    ui.label("Auto-logs in as 'Demo Investigator' with wallet 'tb1q_demo_vault'").classes("text-[10px] text-slate-300")
-            ui.button("LAUNCH DEMO →", on_click=lambda: fill_and_launch_demo()).classes("bg-emerald-600 hover:bg-emerald-500 text-[11px] font-bold px-3 py-1.5 rounded-lg text-white")
+        ui.label("Sign in with credentials & wallet address to isolate monitored wallet topology, upload batch CSVs, and sync to Supabase:").classes("text-xs text-slate-400 mb-3")
 
         with ui.row().classes("w-full items-center justify-between mb-2 p-2 rounded-lg bg-slate-900/60 border border-slate-800"):
             ui.label("Need 1-Wallet CSV for demo?").classes("text-[11px] text-slate-300")
@@ -568,22 +560,16 @@ def open_login_dialog():
                 state.stream_txs = []
                 state.selected_tx_id = ""
                 state.total_scanned = 0
-                ui.notify(f"✓ Connected to {addr}! Ready for live demo (0 Transactions).", type="positive", position="top-right", icon="verified")
+                ui.notify(f"✓ Connected to {addr}! Ready for live upload demo (0 Transactions).", type="positive", position="top-right", icon="verified")
             
             dialog.close()
             refresh_all_views()
-            
-        def fill_and_launch_demo():
-            user_in.set_value("demo_investigator")
-            pass_in.set_value("demo_password")
-            wallet_in.set_value("tb1q_demo_vault")
-            execute_signin(restore_history=False)
 
         with ui.row().classes("w-full justify-between items-center pt-2"):
             ui.button("Cancel", on_click=dialog.close).props("flat text-slate-400 text-xs")
             with ui.row().classes("gap-2"):
                 ui.button("☁️ Load Saved History", on_click=lambda: execute_signin(restore_history=True)).props("flat text-xs text-sky-400 font-bold").tooltip("Restores previous transactions from Supabase")
-                ui.button("⚡ Start Demo (0 Txs)", on_click=lambda: execute_signin(restore_history=False)).classes(
+                ui.button("🔑 Connect Wallet (0 Txs)", on_click=lambda: execute_signin(restore_history=False)).classes(
                     "bg-cyan-600 hover:bg-cyan-500 text-xs font-bold px-4 py-2 rounded-lg text-white"
                 ).tooltip("Starts fresh at 0 transactions ready to upload demo CSV")
     dialog.open()
@@ -1740,8 +1726,7 @@ def render_mempool_feed():
                     ui.label("0 Stream Transactions").classes("text-xs font-bold text-white font-mono-code")
                     ui.label("Wallet is at 0 transactions for live presentation demo.").classes("text-[11px] text-slate-400 text-center")
                     with ui.row().classes("gap-2 mt-1"):
-                        ui.button("📁 Upload CSV", icon="upload_file", on_click=open_csv_upload_dialog).classes("bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-bold px-3 py-1.5 rounded")
-                        ui.button("⚡ 1-Click 27-Tx", icon="bolt", on_click=quick_load_demo_27).classes("bg-amber-600 hover:bg-amber-500 text-white text-[10px] font-bold px-3 py-1.5 rounded")
+                        ui.button("📁 Upload CSV Batch", icon="upload_file", on_click=open_csv_upload_dialog).classes("bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-bold px-3 py-1.5 rounded")
             elif rendered_count == 0:
                 with ui.column().classes("w-full items-center justify-center p-8 text-slate-500 gap-2"):
                     ui.icon("search_off", size="2.5rem")
@@ -1967,9 +1952,6 @@ def render_forensic_inspector():
                                 ui.button("📁 Upload Batch CSV", icon="upload_file", on_click=open_csv_upload_dialog).classes(
                                     "bg-emerald-700 hover:bg-emerald-600 text-white text-[11px] font-bold px-3 py-1 rounded-lg"
                                 ).tooltip("Upload CSV batch (strictly filtered for this wallet)")
-                                ui.button("⚡ 1-Click Load 27-Tx", icon="bolt", on_click=quick_load_demo_27).classes(
-                                    "bg-amber-700 hover:bg-amber-600 text-white text-[11px] font-bold px-3 py-1 rounded-lg"
-                                ).tooltip("1-click instant load for 27 transactions demo")
                                 ui.button("🗑️ Reset to 0", icon="restart_alt", on_click=clear_wallet_workspace).props(
                                     "dense flat text-xs text-rose-400 font-bold"
                                 ).tooltip("Reset workspace to 0 transactions for live demo upload")
@@ -1979,10 +1961,9 @@ def render_forensic_inspector():
                             with ui.card().classes("w-full p-4 mb-2 bg-gradient-to-r from-slate-900/90 via-cyan-950/40 to-slate-900/90 border border-cyan-500/40 rounded-xl items-center text-center gap-2"):
                                 ui.icon("cloud_upload", size="2.2rem").classes("text-cyan-400")
                                 ui.label("DEMO READY: 0 TRANSACTIONS LOADED").classes("text-xs font-bold text-cyan-300 font-mono-code tracking-wider")
-                                ui.label(f"Wallet '{target_w}' initialized with 0 transactions. Upload 'demo_wallet_transactions.csv' or click below to stream 27 transactions live:").classes("text-xs text-slate-300 max-w-lg mb-1")
+                                ui.label(f"Wallet '{target_w}' initialized with 0 transactions. Click below or drag & drop 'demo_wallet_transactions.csv' to stream 27 transactions live:").classes("text-xs text-slate-300 max-w-lg mb-1")
                                 with ui.row().classes("gap-3 justify-center"):
                                     ui.button("📁 Upload 27-Tx Demo CSV", icon="upload_file", on_click=open_csv_upload_dialog).classes("bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold px-4 py-2 rounded-lg")
-                                    ui.button("⚡ Quick Load 27-Tx Demo (1-Click)", icon="bolt", on_click=quick_load_demo_27).classes("bg-amber-600 hover:bg-amber-500 text-white text-xs font-bold px-4 py-2 rounded-lg")
                                     ui.button("📥 Download 27-Tx CSV", icon="download", on_click=lambda: ui.download('/download/demo_wallet_transactions.csv')).classes("bg-slate-800 hover:bg-slate-700 text-cyan-300 text-xs font-bold px-3 py-2 rounded-lg")
 
                         chart_w = ui.echart(build_all_transactions_graph_option(state.stream_txs)).classes("w-full h-[520px]")
